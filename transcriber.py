@@ -13,6 +13,24 @@ os.environ.setdefault("NUMBA_DISABLE_JIT", "1")
 import torch
 import nemo.collections.asr as nemo_asr
 
+def extract_audio_from_video(video_path):
+    temp = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
+    temp_wav = Path(temp.name)
+    temp.close()
+
+    cmd = [
+        "ffmpeg",
+        "-i", str(video_path),
+        "-ac", "1",
+        "-ar", "16000",
+        "-vn",
+        str(temp_wav),
+        "-y"
+    ]
+
+    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    return str(temp_wav)
 
 @dataclass
 class TranscriptionResult:
@@ -151,6 +169,11 @@ class ParakeetTranscriber:
         input_path: str,
         progress_callback: Optional[Callable[[int, int], None]] = None,
     ) -> TranscriptionResult:
+        ext = Path(input_path).suffix.lower()
+        video_temp_audio = None
+        if ext in [".mp4", ".mkv", ".mov", ".avi"]:
+            video_temp_audio = extract_audio_from_video(input_path)
+            input_path = video_temp_audio
         model = self._load_model()
         chunks, temp_dir = self._prepare_audio_chunks(input_path)
         texts = []
@@ -193,6 +216,9 @@ class ParakeetTranscriber:
         finally:
             if temp_dir and os.path.exists(temp_dir):
                 shutil.rmtree(temp_dir, ignore_errors=True)
+
+            if video_temp_audio and os.path.exists(video_temp_audio):
+                os.remove(video_temp_audio)
 
     @staticmethod
     def _is_mps_float64_error(exc: Exception) -> bool:
