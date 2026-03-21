@@ -1,276 +1,224 @@
-import threading
-import traceback
-import time
-import tkinter as tk
+import sys
+print(sys.executable)
+
+import customtkinter as ctk
+from tkinter import filedialog
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+import threading
 
 from transcriber import ParakeetTranscriber
 
+ctk.set_appearance_mode("dark")
+ctk.set_default_color_theme("blue")
 
-class App:
-    def __init__(self, root: tk.Tk):
-        self.is_running = False
-        self.cancel_requested = False
-        self.start_time = None
-        self.root = root
-        self.root.title("Parakeet V3 Transcriber")
-        self.root.geometry("900x600")
+
+class App(ctk.CTk):
+    def __init__(self):
+        super().__init__()
+
+        self.title("Parakeet V3 Transcriber")
+        self.geometry("900x600")
 
         self.transcriber = ParakeetTranscriber()
         self.selected_file = None
+        self.is_running = False
+        self.model_ready = False
 
-        # preload model in background to avoid first-run delay
-        threading.Thread(target=self.transcriber._load_model, daemon=True).start()
+        self.build_ui()
 
-        self.status_var = tk.StringVar(value="Выберите аудиофайл")
+        # загрузка модели в фоне
+        threading.Thread(target=self.load_model_bg, daemon=True).start()
 
-        self._build_ui()
+    def build_ui(self):
 
-    def _build_ui(self):
-        frame = tk.Frame(self.root, padx=12, pady=12)
-        frame.pack(fill="both", expand=True)
+        # ===== HEADER =====
+        self.header = ctk.CTkFrame(self, fg_color="#6C5CE7", height=70, corner_radius=0)
+        self.header.pack(fill="x")
 
-        style = ttk.Style()
+        title = ctk.CTkLabel(
+            self.header,
+            text="🎙 Parakeet Transcriber",
+            font=ctk.CTkFont(size=22, weight="bold"),
+            text_color="white"
+        )
+        title.pack(pady=20)
+
+        # ===== FILE CARD =====
+        self.file_card = ctk.CTkFrame(self, fg_color="#2B2D42", corner_radius=15)
+        self.file_card.pack(fill="x", padx=20, pady=15)
+
+        self.file_label = ctk.CTkLabel(
+            self.file_card,
+            text="Файл не выбран",
+            font=ctk.CTkFont(size=16, weight="bold"),
+            text_color="white"
+        )
+        self.file_label.pack(anchor="w", padx=15, pady=(10, 5))
+
+        self.file_info = ctk.CTkLabel(
+            self.file_card,
+            text="mp3 • wav • mp4 • mkv • mov",
+            text_color="#A0A0A0"
+        )
+        self.file_info.pack(anchor="w", padx=15, pady=(0, 10))
+
+        # ===== BUTTONS =====
+        self.buttons_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.buttons_frame.pack(fill="x", padx=20, pady=5)
+
+        self.open_btn = ctk.CTkButton(
+            self.buttons_frame,
+            text="📂 Открыть",
+            command=self.select_file,
+            fg_color="#00C853",
+            hover_color="#00B248"
+        )
+        self.open_btn.pack(side="left", padx=5)
+
+        self.run_btn = ctk.CTkButton(
+            self.buttons_frame,
+            text="🚀 Старт",
+            command=self.start_transcription,
+            fg_color="#6C5CE7",
+            hover_color="#5A4BD1"
+        )
+        self.run_btn.pack(side="left", padx=5)
+
+        self.save_btn = ctk.CTkButton(
+            self.buttons_frame,
+            text="💾 Сохранить",
+            command=self.save_text,
+            fg_color="#0984E3"
+        )
+        self.save_btn.pack(side="left", padx=5)
+
+        self.copy_btn = ctk.CTkButton(
+            self.buttons_frame,
+            text="📋 Копировать",
+            command=self.copy_text,
+            fg_color="#636E72"
+        )
+        self.copy_btn.pack(side="left", padx=5)
+
+        # ===== STATUS =====
+        self.status = ctk.CTkLabel(
+            self,
+            text="⏳ Загрузка модели...",
+            text_color="#B0B0B0"
+        )
+        self.status.pack(anchor="w", padx=25, pady=(10, 0))
+
+        self.progress = ctk.CTkProgressBar(self, progress_color="#6C5CE7")
+        self.progress.pack(fill="x", padx=20, pady=10)
+        self.progress.set(0)
+
+        # ===== TEXT =====
+        self.textbox = ctk.CTkTextbox(
+            self,
+            corner_radius=15,
+            fg_color="#1E1E2F",
+            text_color="white"
+        )
+        self.textbox.pack(fill="both", expand=True, padx=20, pady=15)
+
+    # ===== MODEL LOADING =====
+
+    def load_model_bg(self):
+        self.after(0, lambda: self.status.configure(text="⏳ Загрузка модели..."))
+
         try:
-            style.theme_use("clam")
-        except Exception:
-            pass
+            self.transcriber._load_model()
+            self.model_ready = True
+            self.after(0, lambda: self.status.configure(text="✅ Модель готова"))
 
-        style.configure("TButton", font=("Arial", 11), padding=6)
-        style.configure("TLabel", font=("Arial", 11))
+        except Exception as e:
+            self.after(0, lambda: self.status.configure(text=f"❌ Ошибка: {e}"))
 
-        file_box = ttk.LabelFrame(frame, text="Файл")
-        file_box.pack(fill="x", pady=(0, 10))
-
-        self.file_label = ttk.Label(file_box, text="Файл не выбран", anchor="w")
-        self.file_label.pack(fill="x", padx=10, pady=(6,2))
-
-        formats = ttk.Label(
-            file_box,
-            text="Поддерживаемые форматы: mp3, wav, flac, m4a, aac, ogg, wma, mp4, mkv, mov, avi",
-            foreground="gray",
-        )
-        formats.pack(fill="x", padx=10, pady=(0,6))
-
-        buttons = ttk.Frame(frame)
-        buttons.pack(fill="x", pady=(0,10))
-
-        self.open_btn = ttk.Button(buttons, text="Открыть аудио", command=self.select_file)
-        self.open_btn.pack(side="left", padx=(0,6))
-
-        self.run_btn = ttk.Button(
-            buttons, text="Транскрибировать", command=self.start_transcription
-        )
-        self.run_btn.pack(side="left", padx=6)
-
-        self.cancel_btn = ttk.Button(
-            buttons, text="Отмена", command=self.cancel_transcription, state="disabled"
-        )
-        self.cancel_btn.pack(side="left", padx=6)
-
-        self.save_btn = ttk.Button(buttons, text="Сохранить TXT", command=self.save_text)
-        self.save_btn.pack(side="left", padx=6)
-
-        self.copy_btn = ttk.Button(buttons, text="Копировать", command=self.copy_text)
-        self.copy_btn.pack(side="left", padx=6)
-
-        self.status_label = ttk.Label(frame, textvariable=self.status_var, anchor="w")
-        self.status_label.pack(fill="x", pady=(0, 8))
-
-        self.progress = ttk.Progressbar(frame, orient="horizontal", mode="determinate")
-        self.progress.pack(fill="x", pady=(0, 10))
-
-        text_box = ttk.LabelFrame(frame, text="Транскрипция")
-        text_box.pack(fill="both", expand=True)
-
-        text_frame = ttk.Frame(text_box)
-        text_frame.pack(fill="both", expand=True, padx=8, pady=8)
-
-        scrollbar = ttk.Scrollbar(text_frame)
-
-        self.text = tk.Text(
-            text_frame,
-            wrap="word",
-            yscrollcommand=scrollbar.set,
-            font=("Arial", 12),
-            padx=10,
-            pady=10,
-        )
-
-        scrollbar.config(command=self.text.yview)
-
-        scrollbar.pack(side="right", fill="y")
-        self.text.pack(side="left", fill="both", expand=True)
+    # ===== LOGIC =====
 
     def select_file(self):
-        path = filedialog.askopenfilename(
-            title="Выберите аудиофайл",
-            filetypes=[
-                (
-                    "Audio / Video files",
-                    "*.mp3 *.wav *.flac *.m4a *.aac *.ogg *.wma *.aiff *.mp4 *.mkv *.mov *.avi",
-                ),
-                ("Audio files", "*.mp3 *.wav *.flac *.m4a *.aac *.ogg *.wma *.aiff"),
-                ("Video files", "*.mp4 *.mkv *.mov *.avi"),
-                ("All files", "*.*"),
-            ],
-        )
+        path = filedialog.askopenfilename()
 
         if not path:
             return
 
-        self.selected_file = str(Path(path))
-        self.file_label.config(text=f"Файл: {Path(path).name}")
-        self.status_var.set("Файл выбран. Можно запускать транскрибацию.")
+        self.selected_file = path
+        self.file_label.configure(text=f"{Path(path).name}")
+        self.status.configure(text="📂 Файл выбран")
 
     def start_transcription(self):
         if self.is_running:
             return
 
         if not self.selected_file:
-            messagebox.showwarning("Нет файла", "Сначала выберите аудиофайл.")
+            self.status.configure(text="❗ Сначала выбери файл")
             return
 
-        if not Path(self.selected_file).exists():
-            messagebox.showerror("Ошибка", "Файл не найден.")
+        if not self.model_ready:
+            self.status.configure(text="⏳ Модель ещё загружается...")
             return
 
         self.is_running = True
-        self.cancel_requested = False
-        self.start_time = time.time()
+        self.progress.set(0)
+        self.textbox.delete("1.0", "end")
+        self.status.configure(text="🎧 Подготовка аудио...")
 
-        self.progress["value"] = 0
-        self.run_btn.config(state="disabled")
-        self.open_btn.config(state="disabled")
-        self.cancel_btn.config(state="normal")
+        threading.Thread(target=self.worker, daemon=True).start()
 
-        self.status_var.set("Транскрибация началась...")
-        self.text.delete("1.0", tk.END)
-
-        thread = threading.Thread(target=self._transcribe_worker, daemon=True)
-        thread.start()
-
-    def _transcribe_worker(self):
+    def worker(self):
         try:
+            self.after(0, lambda: self.status.configure(text="🔪 Разбивка на чанки..."))
+
             result = self.transcriber.transcribe(
-                self.selected_file, progress_callback=self._on_chunk_progress
+                self.selected_file,
+                progress_callback=self.on_progress
             )
 
-            self.root.after(
-                0, self._on_success, result.text, result.device, result.model_name
-            )
+            self.after(0, lambda: self.on_done(result.text))
 
         except Exception as e:
-            if str(e) == "TRANSCRIPTION_CANCELLED":
-                self.root.after(0, self._on_cancelled)
-            else:
-                details = "".join(traceback.format_exception(type(e), e, e.__traceback__))
-                self.root.after(0, self._on_error, details)
+            self.after(0, lambda: self.status.configure(text=f"❌ Ошибка: {e}"))
 
-    def _on_chunk_progress(self, index: int, total: int):
-        if self.cancel_requested:
-            raise RuntimeError("TRANSCRIPTION_CANCELLED")
+        finally:
+            self.is_running = False
 
-        percent = int(index / total * 100)
+    def on_progress(self, i, total):
+        percent = i / total
 
-        elapsed = time.time() - self.start_time if self.start_time else 0
-        avg_per_chunk = elapsed / index if index else 0
-        remaining = avg_per_chunk * (total - index)
+        self.after(0, lambda: self.progress.set(percent))
+        self.after(0, lambda: self.status.configure(
+            text=f"🧠 Обработка: {i}/{total}"
+        ))
 
-        mins = int(remaining // 60)
-        secs = int(remaining % 60)
-
-        def update():
-            eta = f"{mins:02d}:{secs:02d}"
-            self.status_var.set(
-                f"Транскрибация: чанк {index}/{total} • осталось ~ {eta}"
-            )
-            self.progress["value"] = percent
-
-        self.root.after(0, update)
-
-    def _on_success(self, text: str, device: str, model_name: str):
-        self.text.insert("1.0", text)
-
-        self.progress["value"] = 100
-        self.status_var.set(f"Готово. Модель: {model_name}. Устройство: {device}.")
-
-        self.run_btn.config(state="normal")
-        self.open_btn.config(state="normal")
-        self.cancel_btn.config(state="disabled")
-        self.is_running = False
-
-    def _on_error(self, error: str):
-        self.status_var.set("Ошибка транскрибации")
-
-        self.run_btn.config(state="normal")
-        self.open_btn.config(state="normal")
-        self.cancel_btn.config(state="disabled")
-
-        self.is_running = False
-
-        messagebox.showerror("Ошибка", error)
-
-    def _on_cancelled(self):
-        self.status_var.set("Транскрибация отменена")
-        self.run_btn.config(state="normal")
-        self.open_btn.config(state="normal")
-        self.cancel_btn.config(state="disabled")
-        self.is_running = False
+    def on_done(self, text):
+        self.textbox.insert("1.0", text)
+        self.progress.set(1)
+        self.status.configure(text="✅ Готово!")
 
     def save_text(self):
-        content = self.text.get("1.0", tk.END).strip()
-
+        content = self.textbox.get("1.0", "end").strip()
         if not content:
-            messagebox.showwarning("Нет текста", "Сначала выполните транскрибацию.")
             return
 
-        default_name = "transcript.txt"
-
-        if self.selected_file:
-            default_name = f"{Path(self.selected_file).stem}.txt"
-
-        path = filedialog.asksaveasfilename(
-            title="Сохранить текст",
-            defaultextension=".txt",
-            initialfile=default_name,
-            filetypes=[("Text", "*.txt")],
-        )
-
+        path = filedialog.asksaveasfilename(defaultextension=".txt")
         if not path:
             return
 
         with open(path, "w", encoding="utf-8") as f:
             f.write(content)
 
-        self.status_var.set(f"Текст сохранен: {path}")
-
-    def clear_text(self):
-        self.text.delete("1.0", tk.END)
+        self.status.configure(text="💾 Сохранено")
 
     def copy_text(self):
-        content = self.text.get("1.0", tk.END).strip()
+        content = self.textbox.get("1.0", "end").strip()
         if not content:
-            messagebox.showwarning("Нет текста", "Нечего копировать.")
             return
 
-        self.root.clipboard_clear()
-        self.root.clipboard_append(content)
-        self.root.update()
-        self.status_var.set("Текст скопирован в буфер обмена")
-
-    def cancel_transcription(self):
-        if self.is_running:
-            self.cancel_requested = True
-            self.status_var.set("Отмена транскрибации...")
-
-
-def main():
-    root = tk.Tk()
-    App(root)
-    root.mainloop()
+        self.clipboard_clear()
+        self.clipboard_append(content)
+        self.status.configure(text="📋 Скопировано")
 
 
 if __name__ == "__main__":
-    main()
+    app = App()
+    app.mainloop()
