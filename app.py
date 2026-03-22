@@ -15,7 +15,7 @@ ctk.set_default_color_theme("blue")
 class App(ctk.CTk):
     def __init__(self):
         super().__init__()
-
+        
         self.title("Parakeet V3 Transcriber")
         self.geometry("900x600")
 
