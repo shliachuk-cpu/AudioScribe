@@ -2,4 +2,8 @@ nemo_toolkit[asr]>=2.0.0
 soundfile>=0.12.1
 numba<0.63
 customtkinter
-pip install -U customtkinter nemo_toolkit[asr]>=2.0.0 soundfile>=0.12.1 numba<0.63
+pip install -U customtkinter nemo_toolkit[asr]>=2.0.0 soundfile>=0.12.1 numba<0.63 reportlab tkinterdnd2 to
+pip install customtkinter reportlab pillow
+pip install soundfile
+pip install --upgrade pip
+pip install tkinterdnd2
