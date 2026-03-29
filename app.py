@@ -235,41 +235,45 @@ class App(ctk.CTk, TkinterDnD.DnDWrapper if DND_AVAILABLE else object):
             self.status.configure(text="💾 TXT сохранён")
 
     def save_pdf(self):
-        # (оставил как было, можно улучшить позже)
-        try:
-            from reportlab.pdfbase import pdfmetrics
-            from reportlab.pdfbase.ttfonts import TTFont
-            from reportlab.lib.pagesizes import letter
-            from reportlab.pdfgen import canvas
-        except ImportError:
-            self.status.configure(text="❌ reportlab не установлен")
-            return
+        from reportlab.platypus import SimpleDocTemplate, Paragraph
+        from reportlab.lib.styles import getSampleStyleSheet
+        from reportlab.pdfbase.ttfonts import TTFont
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.lib.pagesizes import letter
+        from reportlab.lib.units import mm
 
         text = self.textbox.get("1.0", "end").strip()
-        if not text: 
+        if not text:
             return
 
         path = filedialog.asksaveasfilename(defaultextension=".pdf")
-        if not path: 
+        if not path:
             return
 
-        try:
-            pdfmetrics.registerFont(TTFont('Arial', 'arial.ttf'))
-        except:
-            pass
+    # Регистрируем Arial
+        pdfmetrics.registerFont(TTFont("Arial", "arial.ttf"))
 
-        c = canvas.Canvas(path, pagesize=letter)
-        c.setFont("Arial" if 'Arial' in pdfmetrics.getRegisteredFontNames() else "Helvetica", 11)
+    # Стиль текста
+        styles = getSampleStyleSheet()
+        style = styles["Normal"]
+        style.fontName = "Arial"
+        style.fontSize = 12
+        style.leading = 16  # межстрочный интервал
 
-        y = 750
-        for line in text.splitlines():
-            c.drawString(50, y, line)
-            y -= 15
-            if y < 50:
-                c.showPage()
-                c.setFont("Arial" if 'Arial' in pdfmetrics.getRegisteredFontNames() else "Helvetica", 11)
-                y = 750
-        c.save()
+    # Генерация PDF
+        doc = SimpleDocTemplate(
+        path,
+        pagesize=letter,
+        leftMargin=20 * mm,
+        rightMargin=20 * mm,
+        topMargin=20 * mm,
+        bottomMargin=20 * mm,
+    )
+
+        story = [Paragraph(line.replace("\n", "<br/>"), style) for line in text.split("\n")]
+
+        doc.build(story)
+
         self.status.configure(text="📄 PDF сохранён")
 
 
