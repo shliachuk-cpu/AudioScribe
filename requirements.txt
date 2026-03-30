@@ -7,4 +7,4 @@ pip install customtkinter reportlab pillow
 pip install soundfile
 pip install --upgrade pip
 pip install tkinterdnd2
-#выборочно
+#выборочно1
