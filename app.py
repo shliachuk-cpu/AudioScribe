@@ -1,276 +1,282 @@
-import threading
-import traceback
-import time
-import tkinter as tk
+import sys
+print("Используется Python:", sys.executable)
+
+import customtkinter as ctk
+from tkinter import filedialog
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+import threading
+import subprocess
+
+# ==================== Drag & Drop ====================
+try:
+    from tkinterdnd2 import DND_FILES, TkinterDnD
+    DND_AVAILABLE = True
+except ImportError:
+    DND_AVAILABLE = False
+    print("❌ tkinterdnd2 не установлен → pip install tkinterdnd2")
+
 
 from transcriber import ParakeetTranscriber
 
 
-class App:
-    def __init__(self, root: tk.Tk):
-        self.is_running = False
-        self.cancel_requested = False
-        self.start_time = None
-        self.root = root
-        self.root.title("Parakeet V3 Transcriber")
-        self.root.geometry("900x600")
+# ========================================================
+#   Главный класс с поддержкой DnD
+# ========================================================
+class App(ctk.CTk, TkinterDnD.DnDWrapper if DND_AVAILABLE else object):
+
+    def __init__(self):
+        # Важно: сначала инициализируем оба родителя
+        super().__init__()
+
+        if DND_AVAILABLE:
+            self.TkdndVersion = TkinterDnD._require(self)   # Это обязательная строка!
+
+        self.title("Parakeet V3 Transcriber")
+        self.geometry("920x680")
 
         self.transcriber = ParakeetTranscriber()
         self.selected_file = None
+        self.is_running = False
+        self.model_ready = False
+        self.language = "auto"
 
-        # preload model in background to avoid first-run delay
-        threading.Thread(target=self.transcriber._load_model, daemon=True).start()
+        self.build_ui()
 
-        self.status_var = tk.StringVar(value="Выберите аудиофайл")
+        # Фоновая загрузка модели
+        threading.Thread(target=self.load_model_bg, daemon=True).start()
 
-        self._build_ui()
+        # Настройка Drag & Drop
+        if DND_AVAILABLE:
+            self.after(200, self.setup_drag_drop)
+        else:
+            self.status.configure(text="⚠ Установите tkinterdnd2 для поддержки Drag & Drop")
 
-    def _build_ui(self):
-        frame = tk.Frame(self.root, padx=12, pady=12)
-        frame.pack(fill="both", expand=True)
+    # ----------------------------------------------------- UI
+    def build_ui(self):
+        self.header = ctk.CTkFrame(self, fg_color="#6C5CE7", height=70)
+        self.header.pack(fill="x")
 
-        style = ttk.Style()
-        try:
-            style.theme_use("clam")
-        except Exception:
-            pass
-
-        style.configure("TButton", font=("Arial", 11), padding=6)
-        style.configure("TLabel", font=("Arial", 11))
-
-        file_box = ttk.LabelFrame(frame, text="Файл")
-        file_box.pack(fill="x", pady=(0, 10))
-
-        self.file_label = ttk.Label(file_box, text="Файл не выбран", anchor="w")
-        self.file_label.pack(fill="x", padx=10, pady=(6,2))
-
-        formats = ttk.Label(
-            file_box,
-            text="Поддерживаемые форматы: mp3, wav, flac, m4a, aac, ogg, wma, mp4, mkv, mov, avi",
-            foreground="gray",
+        title = ctk.CTkLabel(
+            self.header,
+            text="🎙 Parakeet Transcriber",
+            font=ctk.CTkFont(size=22, weight="bold"),
+            text_color="white"
         )
-        formats.pack(fill="x", padx=10, pady=(0,6))
+        title.pack(pady=20)
 
-        buttons = ttk.Frame(frame)
-        buttons.pack(fill="x", pady=(0,10))
+        # Дроп-зона (делаем её большой и заметной)
+        self.file_card = ctk.CTkFrame(self, fg_color="#2B2D42", corner_radius=15)
+        self.file_card.pack(fill="x", padx=25, pady=25)
 
-        self.open_btn = ttk.Button(buttons, text="Открыть аудио", command=self.select_file)
-        self.open_btn.pack(side="left", padx=(0,6))
-
-        self.run_btn = ttk.Button(
-            buttons, text="Транскрибировать", command=self.start_transcription
+        self.file_label = ctk.CTkLabel(
+            self.file_card,
+            text="📂 Перетащите файл сюда\n\nили нажмите кнопку «Открыть файл»\n\nПоддерживаются: mp4, mkv, mov, avi, mp3, wav...",
+            font=ctk.CTkFont(size=15),
+            text_color="#A0A0A0",
+            justify="center"
         )
+        self.file_label.pack(expand=True, pady=40)
+
+        # Кнопки
+        self.buttons_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.buttons_frame.pack(fill="x", padx=25, pady=8)
+
+        self.open_btn = ctk.CTkButton(self.buttons_frame, text="📂 Открыть файл", 
+                                      command=self.select_file, fg_color="#00C853", width=150)
+        self.open_btn.pack(side="left", padx=6)
+
+        self.run_btn = ctk.CTkButton(self.buttons_frame, text="🚀 Старт транскрибации", 
+                                     command=self.start_transcription, fg_color="#6C5CE7", width=190)
         self.run_btn.pack(side="left", padx=6)
 
-        self.cancel_btn = ttk.Button(
-            buttons, text="Отмена", command=self.cancel_transcription, state="disabled"
-        )
-        self.cancel_btn.pack(side="left", padx=6)
-
-        self.save_btn = ttk.Button(buttons, text="Сохранить TXT", command=self.save_text)
+        self.save_btn = ctk.CTkButton(self.buttons_frame, text="💾 TXT", 
+                                      command=self.save_text, fg_color="#0984E3", width=110)
         self.save_btn.pack(side="left", padx=6)
 
-        self.copy_btn = ttk.Button(buttons, text="Копировать", command=self.copy_text)
-        self.copy_btn.pack(side="left", padx=6)
+        self.pdf_btn = ctk.CTkButton(self.buttons_frame, text="📄 PDF", 
+                                     command=self.save_pdf, fg_color="#d63031", width=110)
+        self.pdf_btn.pack(side="left", padx=6)
 
-        self.status_label = ttk.Label(frame, textvariable=self.status_var, anchor="w")
-        self.status_label.pack(fill="x", pady=(0, 8))
-
-        self.progress = ttk.Progressbar(frame, orient="horizontal", mode="determinate")
-        self.progress.pack(fill="x", pady=(0, 10))
-
-        text_box = ttk.LabelFrame(frame, text="Транскрипция")
-        text_box.pack(fill="both", expand=True)
-
-        text_frame = ttk.Frame(text_box)
-        text_frame.pack(fill="both", expand=True, padx=8, pady=8)
-
-        scrollbar = ttk.Scrollbar(text_frame)
-
-        self.text = tk.Text(
-            text_frame,
-            wrap="word",
-            yscrollcommand=scrollbar.set,
-            font=("Arial", 12),
-            padx=10,
-            pady=10,
+        self.lang_dropdown = ctk.CTkComboBox(
+            self.buttons_frame, values=["auto", "ru", "en", "uk", "es"],
+            command=self.set_language, width=100
         )
+        self.lang_dropdown.set("auto")
+        self.lang_dropdown.pack(side="right", padx=10)
 
-        scrollbar.config(command=self.text.yview)
+        self.status = ctk.CTkLabel(self, text="⏳ Загрузка модели...", text_color="#B0B0B0")
+        self.status.pack(anchor="w", padx=30, pady=(5, 0))
 
-        scrollbar.pack(side="right", fill="y")
-        self.text.pack(side="left", fill="both", expand=True)
+        self.progress = ctk.CTkProgressBar(self, progress_color="#6C5CE7")
+        self.progress.pack(fill="x", padx=25, pady=12)
+        self.progress.set(0)
+
+        self.textbox = ctk.CTkTextbox(self, corner_radius=15, fg_color="#1E1E2F", text_color="white", font=ctk.CTkFont(size=14))
+        self.textbox.pack(fill="both", expand=True, padx=25, pady=15)
+
+    # ----------------------------------------------------- DnD Setup
+    def setup_drag_drop(self):
+        try:
+            # Регистрируем дроп на всё главное окно
+            self.drop_target_register(DND_FILES)
+            self.dnd_bind('<<Drop>>', self.on_drop)
+
+            # Дополнительно на карточку (более заметно)
+            self.file_card.drop_target_register(DND_FILES)
+            self.file_card.dnd_bind('<<Drop>>', self.on_drop)
+
+            print("✅ Drag & Drop успешно активирован")
+            self.file_label.configure(text_color="white")
+        except Exception as e:
+            print(f"Ошибка DnD: {e}")
+
+    def on_drop(self, event):
+        file_path = event.data.strip()
+
+        # Убираем фигурные скобки (tkinterdnd2 их добавляет при пробелах в пути)
+        if file_path.startswith('{') and file_path.endswith('}'):
+            file_path = file_path[1:-1]
+
+        # Если несколько файлов — берём первый
+        if ' ' in file_path:
+            file_path = file_path.split()[0]
+
+        if Path(file_path).exists():
+            self.set_file(file_path)
+        else:
+            self.status.configure(text="❌ Не удалось получить путь к файлу")
+
+    # ----------------------------------------------------- Остальные методы (без изменений)
+    def load_model_bg(self):
+        try:
+            self.transcriber._load_model()
+            self.model_ready = True
+            self.status.configure(text="✅ Модель загружена и готова к работе")
+        except Exception as e:
+            self.status.configure(text=f"❌ Ошибка модели: {str(e)[:80]}...")
 
     def select_file(self):
         path = filedialog.askopenfilename(
-            title="Выберите аудиофайл",
-            filetypes=[
-                (
-                    "Audio / Video files",
-                    "*.mp3 *.wav *.flac *.m4a *.aac *.ogg *.wma *.aiff *.mp4 *.mkv *.mov *.avi",
-                ),
-                ("Audio files", "*.mp3 *.wav *.flac *.m4a *.aac *.ogg *.wma *.aiff"),
-                ("Video files", "*.mp4 *.mkv *.mov *.avi"),
-                ("All files", "*.*"),
-            ],
+            filetypes=[("Поддерживаемые файлы", "*.mp4 *.mkv *.mov *.avi *.mp3 *.wav *.ogg *.flac")]
         )
+        if path:
+            self.set_file(path)
 
-        if not path:
+    def set_file(self, path):
+        p = Path(path)
+        if not p.exists():
+            self.status.configure(text="❌ Файл не найден")
             return
 
-        self.selected_file = str(Path(path))
-        self.file_label.config(text=f"Файл: {Path(path).name}")
-        self.status_var.set("Файл выбран. Можно запускать транскрибацию.")
+        self.selected_file = str(p)
+        self.file_label.configure(text=f"📄 Выбран файл:\n{p.name}")
+
+        duration = self.get_duration(str(p))
+        self.status.configure(text=f"📂 {p.name} • {duration}")
+
+    def get_duration(self, path):
+        try:
+            result = subprocess.run(
+                ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                 "-of", "default=noprint_wrappers=1:nokey=1", path],
+                stdout=subprocess.PIPE, text=True,
+                creationflags=subprocess.CREATE_NO_WINDOW
+            )
+            sec = float(result.stdout.strip())
+            return f"{int(sec//60)}:{int(sec%60):02d}"
+        except:
+            return "?"
+
+    def set_language(self, value):
+        self.language = value
 
     def start_transcription(self):
-        if self.is_running:
+        if not self.model_ready:
+            self.status.configure(text="⏳ Модель ещё загружается...")
             return
-
         if not self.selected_file:
-            messagebox.showwarning("Нет файла", "Сначала выберите аудиофайл.")
+            self.status.configure(text="❗ Выберите файл перед запуском")
             return
-
-        if not Path(self.selected_file).exists():
-            messagebox.showerror("Ошибка", "Файл не найден.")
+        if self.is_running:
             return
 
         self.is_running = True
-        self.cancel_requested = False
-        self.start_time = time.time()
+        self.progress.set(0)
+        self.textbox.delete("1.0", "end")
+        self.status.configure(text="🎧 Идёт транскрибация...")
 
-        self.progress["value"] = 0
-        self.run_btn.config(state="disabled")
-        self.open_btn.config(state="disabled")
-        self.cancel_btn.config(state="normal")
+        threading.Thread(target=self.worker, daemon=True).start()
 
-        self.status_var.set("Транскрибация началась...")
-        self.text.delete("1.0", tk.END)
-
-        thread = threading.Thread(target=self._transcribe_worker, daemon=True)
-        thread.start()
-
-    def _transcribe_worker(self):
+    def worker(self):
         try:
-            result = self.transcriber.transcribe(
-                self.selected_file, progress_callback=self._on_chunk_progress
-            )
-
-            self.root.after(
-                0, self._on_success, result.text, result.device, result.model_name
-            )
-
+            result = self.transcriber.transcribe(self.selected_file, progress_callback=self.on_progress)
+            self.after(0, lambda t=result.text: self.on_done(t))
         except Exception as e:
-            if str(e) == "TRANSCRIPTION_CANCELLED":
-                self.root.after(0, self._on_cancelled)
-            else:
-                details = "".join(traceback.format_exception(type(e), e, e.__traceback__))
-                self.root.after(0, self._on_error, details)
+            self.after(0, lambda: self.status.configure(text=f"❌ Ошибка: {e}"))
+        finally:
+            self.is_running = False
 
-    def _on_chunk_progress(self, index: int, total: int):
-        if self.cancel_requested:
-            raise RuntimeError("TRANSCRIPTION_CANCELLED")
+    def on_progress(self, i, total):
+        self.after(0, lambda: self.progress.set(i / total))
+        self.after(0, lambda: self.status.configure(text=f"Чанк {i} из {total}"))
 
-        percent = int(index / total * 100)
-
-        elapsed = time.time() - self.start_time if self.start_time else 0
-        avg_per_chunk = elapsed / index if index else 0
-        remaining = avg_per_chunk * (total - index)
-
-        mins = int(remaining // 60)
-        secs = int(remaining % 60)
-
-        def update():
-            eta = f"{mins:02d}:{secs:02d}"
-            self.status_var.set(
-                f"Транскрибация: чанк {index}/{total} • осталось ~ {eta}"
-            )
-            self.progress["value"] = percent
-
-        self.root.after(0, update)
-
-    def _on_success(self, text: str, device: str, model_name: str):
-        self.text.insert("1.0", text)
-
-        self.progress["value"] = 100
-        self.status_var.set(f"Готово. Модель: {model_name}. Устройство: {device}.")
-
-        self.run_btn.config(state="normal")
-        self.open_btn.config(state="normal")
-        self.cancel_btn.config(state="disabled")
-        self.is_running = False
-
-    def _on_error(self, error: str):
-        self.status_var.set("Ошибка транскрибации")
-
-        self.run_btn.config(state="normal")
-        self.open_btn.config(state="normal")
-        self.cancel_btn.config(state="disabled")
-
-        self.is_running = False
-
-        messagebox.showerror("Ошибка", error)
-
-    def _on_cancelled(self):
-        self.status_var.set("Транскрибация отменена")
-        self.run_btn.config(state="normal")
-        self.open_btn.config(state="normal")
-        self.cancel_btn.config(state="disabled")
-        self.is_running = False
+    def on_done(self, text):
+        self.textbox.insert("1.0", text)
+        self.progress.set(1.0)
+        self.status.configure(text="✅ Транскрибация завершена успешно")
 
     def save_text(self):
-        content = self.text.get("1.0", tk.END).strip()
+        text = self.textbox.get("1.0", "end").strip()
+        if not text:
+            return
+        path = filedialog.asksaveasfilename(defaultextension=".txt")
+        if path:
+            Path(path).write_text(text, encoding="utf-8")
+            self.status.configure(text="💾 TXT сохранён")
 
-        if not content:
-            messagebox.showwarning("Нет текста", "Сначала выполните транскрибацию.")
+    def save_pdf(self):
+        from reportlab.platypus import SimpleDocTemplate, Paragraph
+        from reportlab.lib.styles import getSampleStyleSheet
+        from reportlab.pdfbase.ttfonts import TTFont
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.lib.pagesizes import letter
+        from reportlab.lib.units import mm
+
+        text = self.textbox.get("1.0", "end").strip()
+        if not text:
             return
 
-        default_name = "transcript.txt"
-
-        if self.selected_file:
-            default_name = f"{Path(self.selected_file).stem}.txt"
-
-        path = filedialog.asksaveasfilename(
-            title="Сохранить текст",
-            defaultextension=".txt",
-            initialfile=default_name,
-            filetypes=[("Text", "*.txt")],
-        )
-
+        path = filedialog.asksaveasfilename(defaultextension=".pdf")
         if not path:
             return
 
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(content)
+    # Регистрируем Arial
+        pdfmetrics.registerFont(TTFont("Arial", "arial.ttf"))
 
-        self.status_var.set(f"Текст сохранен: {path}")
+    # Стиль текста
+        styles = getSampleStyleSheet()
+        style = styles["Normal"]
+        style.fontName = "Arial"
+        style.fontSize = 12
+        style.leading = 16  # межстрочный интервал
 
-    def clear_text(self):
-        self.text.delete("1.0", tk.END)
+    # Генерация PDF
+        doc = SimpleDocTemplate(
+        path,
+        pagesize=letter,
+        leftMargin=20 * mm,
+        rightMargin=20 * mm,
+        topMargin=20 * mm,
+        bottomMargin=20 * mm,
+    )
 
-    def copy_text(self):
-        content = self.text.get("1.0", tk.END).strip()
-        if not content:
-            messagebox.showwarning("Нет текста", "Нечего копировать.")
-            return
+        story = [Paragraph(line.replace("\n", "<br/>"), style) for line in text.split("\n")]
 
-        self.root.clipboard_clear()
-        self.root.clipboard_append(content)
-        self.root.update()
-        self.status_var.set("Текст скопирован в буфер обмена")
+        doc.build(story)
 
-    def cancel_transcription(self):
-        if self.is_running:
-            self.cancel_requested = True
-            self.status_var.set("Отмена транскрибации...")
-
-
-def main():
-    root = tk.Tk()
-    App(root)
-    root.mainloop()
+        self.status.configure(text="📄 PDF сохранён")
 
 
 if __name__ == "__main__":
-    main()
+    app = App()
+    app.mainloop()
